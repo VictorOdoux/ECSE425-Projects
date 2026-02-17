@@ -30,6 +30,13 @@ end cache;
 architecture arch of cache is
 
 -- declare signals here
+	type t_cache_data is array(31 downto 0) of std_logic_vector(127 downto 0); 
+	type t_cache_info is array(31 downto 0) of std_logic_vector(7 downto 0); 
+	signal data : t_cache_data; 
+	signal info : t_cache_info; 
+	
+	type t_state is (main, memwrite, memread, transition); 
+	signal state: t_state; 
 
 begin
 
