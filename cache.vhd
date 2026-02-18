@@ -71,12 +71,23 @@ begin
 			else -- reset != 1
 				case state is
 					when main => 
-						-- stuff happens, probably check cache miss vs hit here
+						if (s_write = '1') then
+							-- stuff
+						elsif (s_read = '1') then
+							-- more stuff
+						end if; 
 					
 					when memwrite => 
-						-- more stuff, send back to main when done
+						-- cache miss and line dirty
+						-- if m_waitrequest = 0, m_write = 0
+						-- if 16B written (count = 15), clear valid and dirty bit
+						-- send back to main when done
 						
 					when memread => 
+						-- cache miss and line clean
+						-- if m_waitrequest = 0, store the m_readdata
+						-- keep reading until count = 15
+						-- after done, set valid, clear dirty bit, store tag tag
 						-- also send back to main when done
 					
 					when transition => 
