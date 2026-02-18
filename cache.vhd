@@ -36,8 +36,8 @@ architecture arch of cache is
 	-- 32 = 2^5, 5 index bits, 4 offset bits (2 of which ignored), so 15 lower bits - 5 - 4 = 6 tag bits
 	-- cache info: 1 valid bit, 1 dirty bit, 6 tag bits
 	type t_cache_info is array(31 downto 0) of std_logic_vector(7 downto 0); 
-	signal data : t_cache_data; 
-	signal info : t_cache_info; 
+	signal data : t_cache_data; -- tag is 14-9, index is 8-4, offset is 3-0, 3-2 ig ignore last 2
+	signal info : t_cache_info; -- valid bit 7, dirty bit 6, tag 5-0
 	
 	type t_state is (main, memwrite, memread, transition); 
 	signal state: t_state; 
@@ -48,7 +48,8 @@ begin
 
 	cache_process : process(clock) 
 		variable count : integer range 0 to 15; -- 16B when interacting with mem
-		-- probably add to this
+		variable index : integer range 0 to 31; 
+		variable offset : integer range 0 to 3; 
 	
 	begin
 		if (rising_edge(clock)) then
@@ -72,7 +73,47 @@ begin
 				case state is
 					when main => 
 						if (s_write = '1') then
-							-- stuff
+							index := to_integer(unsigned(s_addr(8 downto 4))); 
+							-- s_addr is std logic vec so need to convert in two steps
+							
+							if (info(index)(5 down to 0) = s_addr(14 downto 9) and info(index)(7) = '1') then
+								-- write hit b/c tag matches and valid bit = 1
+								offset := to_integer(unsigned(s_addr(3 downto 2))); 
+
+								data(index)(offset * 32 + 31 downto offset * 32) <= s_writedata; -- overwrite that word
+								info(index)(6) <= '1'; -- dirty bit
+								s_waitrequest <= '0'; -- release CPU
+								state <= transition; 
+
+							else
+								-- decide whether to go to memread or memwrite
+								if (info(index)(7) = '1' and info(index)(6) = '1') then
+									-- line valid and dirty, must evict
+									m_write <= '1';
+									m_read <= '0';
+									count := 0;
+									
+									address := to_integer(unsigned(info(index)(5 downto 0)) & unsigned(s_addr(8 downto 4)) & to_unsigned(0,4)); 
+									-- old tag, index, offset = 0
+									m_addr <= address; 
+									
+									m_writedata <= data(index)(7 downto 0); 
+									state <= memwrite; 
+									
+								else 
+									-- not dirty, just fetch directly
+									m_read <= '1'; 
+									m_write <= '0'; 
+									count := 0; 
+									
+									address := to_integer(unsigned(s_addr(14 downto 4)) & to_unsigned(0,4)); 
+									m_addr <= address; 
+									state <= memread; 
+									
+								end if; 
+
+								
+							end if; 
 						elsif (s_read = '1') then
 							-- more stuff
 						end if; 
