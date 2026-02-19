@@ -50,6 +50,7 @@ begin
 		variable count : integer range 0 to 15; -- 16B when interacting with mem
 		variable index : integer range 0 to 31; 
 		variable offset : integer range 0 to 3; 
+		variable address : integer range 0 to ram_size - 1; -- forgot to add this lol
 	
 	begin
 		if (rising_edge(clock)) then
@@ -115,7 +116,42 @@ begin
 								
 							end if; 
 						elsif (s_read = '1') then
-							-- more stuff
+							index := to_integer(unsigned(s_addr(8 downto 4)));
+							
+							if (info(index)(7) = '1' and info(index)(5 downto 0) = s_addr(14 downto 9)) then
+								-- read hit
+								
+								offset := to_integer(unsigned(s_addr(3 downto 2))); 
+								s_readdata <= data(index)((offset * 32 + 31) downto (offset * 32)); -- extract word and return
+								s_waitrequest <= '0'; -- release cpu same as before
+								state <= transition; 
+							else 
+								-- read miss
+								if (info(index)(7) = '1' and info(index)(6) = '1') then 
+									-- similar to write miss, line dirty so memwrite
+									m_write <= '1';
+									m_read <= '0';
+									count := 0;
+									
+									address := to_integer(unsigned(info(index)(5 downto 0)) & unsigned(s_addr(8 downto 4)) & to_unsigned(0,4));
+									m_addr <= address;
+									
+									m_writedata <= data(index)(7 downto 0);
+									state <= memwrite;
+								
+								else 
+									-- not dirty, so just fetch directly
+									m_read <= '1';
+									m_write <= '0';
+									count := 0;
+									
+									address := to_integer(unsigned(s_addr(14 downto 4)) & to_unsigned(0,4));
+									m_addr <= address;
+									state <= memread; 
+									
+								end if; 
+							end if; 
+							
 						end if; 
 					
 					when memwrite => 
