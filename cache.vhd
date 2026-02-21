@@ -36,8 +36,8 @@ architecture arch of cache is
 	-- 32 = 2^5, 5 index bits, 4 offset bits (2 of which ignored), so 15 lower bits - 5 - 4 = 6 tag bits
 	-- cache info: 1 valid bit, 1 dirty bit, 6 tag bits
 	type t_cache_info is array(31 downto 0) of std_logic_vector(7 downto 0); 
-	signal data : t_cache_data; -- tag is 14-9, index is 8-4, offset is 3-0, 3-2 ig ignore last 2
-	signal info : t_cache_info; -- valid bit 7, dirty bit 6, tag 5-0
+	signal data : t_cache_data := (others => (others => '0')); -- tag is 14-9, index is 8-4, offset is 3-0, 3-2 ig ignore last 2
+	signal info : t_cache_info := (others => (others => '0')); -- valid bit 7, dirty bit 6, tag 5-0
 	
 	type t_state is (main, memwrite, memread, transition); 
 	signal state: t_state; 
@@ -60,7 +60,6 @@ begin
 -- make circuits here
 
 	cache_process : process(clock) 
-		variable count : integer range 0 to 15; -- 16B when interacting with mem
 		variable index : integer range 0 to 31; 
 		variable offset : integer range 0 to 3; 
 		variable address : integer range 0 to ram_size - 1; -- forgot to add this lol
@@ -72,10 +71,8 @@ begin
 			if (reset = '1') then
 				state <= main; 
 				-- clear everything to 0
-				if reset = '1' then 
-					data <= (others => (others => '0'));
-					info <= (others => (others => '0'));
-				end if; 
+				data <= (others => (others => '0'));
+				info <= (others => (others => '0'));
 				
 				s_waitrequest <= '1'; 
 				
@@ -99,6 +96,8 @@ begin
 			else -- reset != 1
 				case state is
 					when main => 
+						m_read <= '0';
+						m_write <= '0';
 						s_waitrequest <= '1';
 						if (s_write = '1') then
 							index := to_integer(unsigned(s_addr(8 downto 4))); 
@@ -122,7 +121,8 @@ begin
 								pend_offset   <= to_integer(unsigned(s_addr(3 downto 2)));
 								pend_tag      <= s_addr(14 downto 9);
 								tmp15 := s_addr(14 downto 4) & "0000";
-								base_refill_addr <= to_integer(unsigned(tmp15));
+								address := to_integer(unsigned(tmp15));
+								base_refill_addr <= address;
 
 								if (info(index)(7) = '1' and info(index)(6) = '1') then
 									-- line valid and dirty, must evict
@@ -141,7 +141,7 @@ begin
 									m_read <= '1'; 
 									m_write <= '0'; 
 									count_reg <= 0;
-									m_addr <= base_refill_addr; -- aligned base
+									m_addr <= address;
 									refill_buf <= (others => '0');
 									state <= memread; 
 									
@@ -161,15 +161,26 @@ begin
 								state <= transition; 
 							else 
 								-- read miss
+								pend_is_write <= '0';
+								pend_addr15   <= s_addr(14 downto 0);
+								pend_wdata    <= (others => '0');
+								pend_index    <= index;
+								pend_offset   <= to_integer(unsigned(s_addr(3 downto 2)));
+								pend_tag      <= s_addr(14 downto 9);
+
+								tmp15 := s_addr(14 downto 4) & "0000";
+								address := to_integer(unsigned(tmp15));
+								base_refill_addr <= address;
+
 								if (info(index)(7) = '1' and info(index)(6) = '1') then 
 									-- similar to write miss, line dirty so memwrite
 									m_write <= '1';
 									m_read <= '0';
-									count := 0;
-									
-									address := to_integer(unsigned(info(index)(5 downto 0)) & unsigned(s_addr(8 downto 4)) & to_unsigned(0,4));
+									tmp15 := info(index)(5 downto 0) & s_addr(8 downto 4) & "0000";
+									address := to_integer(unsigned(tmp15));
+									base_evict_addr <= address;
+								    count_reg <= 0;
 									m_addr <= address;
-									
 									m_writedata <= data(index)(7 downto 0);
 									state <= memwrite;
 								
@@ -177,36 +188,12 @@ begin
 									-- not dirty, so just fetch directly
 									m_read <= '1';
 									m_write <= '0';
-									pend_is_write <= '0';
-									pend_addr15   <= s_addr(14 downto 0);
-									pend_wdata    <= (others => '0');
-									pend_index    <= index;
-									pend_offset   <= to_integer(unsigned(s_addr(3 downto 2)));
-									pend_tag      <= s_addr(14 downto 9);
+									count_reg <= 0;
+									m_addr <= address;
 
-									tmp15 := s_addr(14 downto 4) & "0000";
-									base_refill_addr <= to_integer(unsigned(tmp15));
-									if (info(index)(7) = '1' and info(index)(6) = '1') then 
-										-- dirty -> writeback first
-										m_write <= '1';
-										m_read <= '0';
-										tmp15 := info(index)(5 downto 0) & s_addr(8 downto 4) & "0000";
-										address := to_integer(unsigned(tmp15));
-										base_evict_addr <= address;
-
-										count_reg <= 0;
-										m_addr <= address;
-										m_writedata <= data(index)(7 downto 0);
-										state <= memwrite;
-									else 
-										-- just fetch
-										m_read <= '1';
-										m_write <= '0';
-
-										count_reg <= 0;
-										m_addr <= base_refill_addr;
-										refill_buf <= (others => '0');
-										state <= memread; 	
+									refill_buf <= (others => '0');
+									state <= memread;
+								 	
 								end if; 
 							end if; 
 							
@@ -224,9 +211,6 @@ begin
 								count_reg <= 0;
 
 								info(pend_index)(6) <= '0';
-
-								m_read <= '1';
-								m_addr <= base_refill_addr;
 								refill_buf <= (others => '0');
 								state <= memread;
 							else
@@ -240,29 +224,29 @@ begin
 						m_addr <= base_refill_addr + count_reg;
 
 						if (m_waitrequest = '0') then
-							refill_buf(count_reg*8 + 7 downto count_reg*8) <= m_readdata;
-
 							if (count_reg = 15) then
-								m_read <= '0';
+								tmp_line := refill_buf;
+								tmp_line(15*8 + 7 downto 15*8) := m_readdata;
 
-								data(pend_index) <= refill_buf;
+								m_read <= '0';
+								data(pend_index) <= tmp_line;
 								info(pend_index)(7) <= '1'; -- valid
 								info(pend_index)(6) <= '0'; -- clean on fill
 								info(pend_index)(5 downto 0) <= pend_tag;
 
 								if (pend_is_write = '1') then
-									tmp_line := refill_buf;
 									tmp_line(pend_offset*32 + 31 downto pend_offset*32) := pend_wdata;
 									data(pend_index) <= tmp_line;
 									info(pend_index)(6) <= '1'; -- dirty
 								else
-									s_readdata <= refill_buf(pend_offset*32 + 31 downto pend_offset*32);
+									s_readdata <= tmp_line(pend_offset*32 + 31 downto pend_offset*32);
 								end if;
 
 								s_waitrequest <= '0';
 								state <= transition;
 								count_reg <= 0;
 							else
+								refill_buf(count_reg*8 + 7 downto count_reg*8) <= m_readdata;
 								count_reg <= count_reg + 1;
 							end if;
 						end if;
