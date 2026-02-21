@@ -4,7 +4,7 @@ use ieee.numeric_std.all;
 
 entity cache is
 generic(
-	ram_size : INTEGER := 32768;
+	ram_size : INTEGER := 32768
 );
 port(
 	clock : in std_logic;
@@ -41,6 +41,19 @@ architecture arch of cache is
 	
 	type t_state is (main, memwrite, memread, transition); 
 	signal state: t_state; 
+	signal pend_is_write : std_logic := '0';
+	signal pend_addr15   : std_logic_vector(14 downto 0) := (others => '0');
+	signal pend_wdata    : std_logic_vector(31 downto 0) := (others => '0');
+
+	signal pend_index    : integer range 0 to 31 := 0;
+	signal pend_offset   : integer range 0 to 3  := 0;
+	signal pend_tag      : std_logic_vector(5 downto 0) := (others => '0');
+
+	signal base_refill_addr : integer range 0 to ram_size-1 := 0; -- new block base (aligned 16B)
+	signal base_evict_addr  : integer range 0 to ram_size-1 := 0; -- old block base (aligned 16B)
+
+	signal refill_buf : std_logic_vector(127 downto 0) := (others => '0');
+	signal count_reg : integer range 0 to 15 := 0;
 
 begin
 
@@ -51,6 +64,8 @@ begin
 		variable index : integer range 0 to 31; 
 		variable offset : integer range 0 to 3; 
 		variable address : integer range 0 to ram_size - 1; -- forgot to add this lol
+		variable tmp15 : std_logic_vector(14 downto 0);
+		variable tmp_line : std_logic_vector(127 downto 0);
 	
 	begin
 		if (rising_edge(clock)) then
@@ -70,14 +85,26 @@ begin
 				
 				s_readdata <= (others => '0'); -- this format for std logic vectors
 				m_writedata <= (others => '0'); 
+				pend_is_write <= '0';
+				pend_addr15 <= (others => '0');
+				pend_wdata <= (others => '0');
+				pend_index <= 0;
+				pend_offset <= 0;
+				pend_tag <= (others => '0');
+				base_refill_addr <= 0;
+				base_evict_addr <= 0;
+				refill_buf <= (others => '0');
+				count_reg <= 0;
+
 			else -- reset != 1
 				case state is
 					when main => 
+						s_waitrequest <= '1';
 						if (s_write = '1') then
 							index := to_integer(unsigned(s_addr(8 downto 4))); 
 							-- s_addr is std logic vec so need to convert in two steps
 							
-							if (info(index)(5 down to 0) = s_addr(14 downto 9) and info(index)(7) = '1') then
+							if (info(index)(5 downto 0) = s_addr(14 downto 9) and info(index)(7) = '1') then
 								-- write hit b/c tag matches and valid bit = 1
 								offset := to_integer(unsigned(s_addr(3 downto 2))); 
 
@@ -88,27 +115,34 @@ begin
 
 							else
 								-- decide whether to go to memread or memwrite
+								pend_is_write <= '1';
+								pend_addr15   <= s_addr(14 downto 0);
+								pend_wdata    <= s_writedata;
+								pend_index    <= index;
+								pend_offset   <= to_integer(unsigned(s_addr(3 downto 2)));
+								pend_tag      <= s_addr(14 downto 9);
+								tmp15 := s_addr(14 downto 4) & "0000";
+								base_refill_addr <= to_integer(unsigned(tmp15));
+
 								if (info(index)(7) = '1' and info(index)(6) = '1') then
 									-- line valid and dirty, must evict
 									m_write <= '1';
 									m_read <= '0';
-									count := 0;
-									
-									address := to_integer(unsigned(info(index)(5 downto 0)) & unsigned(s_addr(8 downto 4)) & to_unsigned(0,4)); 
-									-- old tag, index, offset = 0
-									m_addr <= address; 
-									
-									m_writedata <= data(index)(7 downto 0); 
+									tmp15 := info(index)(5 downto 0) & s_addr(8 downto 4) & "0000";
+									address := to_integer(unsigned(tmp15));
+									base_evict_addr <= address;
+									count_reg <= 0;
+									m_addr <= address;
+									m_writedata <= data(index)(7 downto 0); -- byte0
 									state <= memwrite; 
 									
 								else 
 									-- not dirty, just fetch directly
 									m_read <= '1'; 
 									m_write <= '0'; 
-									count := 0; 
-									
-									address := to_integer(unsigned(s_addr(14 downto 4)) & to_unsigned(0,4)); 
-									m_addr <= address; 
+									count_reg <= 0;
+									m_addr <= base_refill_addr; -- aligned base
+									refill_buf <= (others => '0');
 									state <= memread; 
 									
 								end if; 
@@ -143,35 +177,104 @@ begin
 									-- not dirty, so just fetch directly
 									m_read <= '1';
 									m_write <= '0';
-									count := 0;
-									
-									address := to_integer(unsigned(s_addr(14 downto 4)) & to_unsigned(0,4));
-									m_addr <= address;
-									state <= memread; 
-									
+									pend_is_write <= '0';
+									pend_addr15   <= s_addr(14 downto 0);
+									pend_wdata    <= (others => '0');
+									pend_index    <= index;
+									pend_offset   <= to_integer(unsigned(s_addr(3 downto 2)));
+									pend_tag      <= s_addr(14 downto 9);
+
+									tmp15 := s_addr(14 downto 4) & "0000";
+									base_refill_addr <= to_integer(unsigned(tmp15));
+									if (info(index)(7) = '1' and info(index)(6) = '1') then 
+										-- dirty -> writeback first
+										m_write <= '1';
+										m_read <= '0';
+										tmp15 := info(index)(5 downto 0) & s_addr(8 downto 4) & "0000";
+										address := to_integer(unsigned(tmp15));
+										base_evict_addr <= address;
+
+										count_reg <= 0;
+										m_addr <= address;
+										m_writedata <= data(index)(7 downto 0);
+										state <= memwrite;
+									else 
+										-- just fetch
+										m_read <= '1';
+										m_write <= '0';
+
+										count_reg <= 0;
+										m_addr <= base_refill_addr;
+										refill_buf <= (others => '0');
+										state <= memread; 	
 								end if; 
 							end if; 
 							
 						end if; 
 					
 					when memwrite => 
-						-- cache miss and line dirty
-						-- if m_waitrequest = 0, m_write = 0
-						-- if 16B written (count = 15), clear valid and dirty bit
-						-- send back to main when done
-						
+						m_read <= '0';
+						m_write <= '1';
+						m_addr <= base_evict_addr + count_reg;
+						m_writedata <= data(pend_index)(count_reg*8 + 7 downto count_reg*8);
+
+						if (m_waitrequest = '0') then
+							if (count_reg = 15) then
+								m_write <= '0';
+								count_reg <= 0;
+
+								info(pend_index)(6) <= '0';
+
+								m_read <= '1';
+								m_addr <= base_refill_addr;
+								refill_buf <= (others => '0');
+								state <= memread;
+							else
+								count_reg <= count_reg + 1;
+							end if;
+						end if;
+							
 					when memread => 
-						-- cache miss and line clean
-						-- if m_waitrequest = 0, store the m_readdata
-						-- keep reading until count = 15
-						-- after done, set valid, clear dirty bit, store tag tag
-						-- also send back to main when done
+						m_write <= '0';
+						m_read <= '1';
+						m_addr <= base_refill_addr + count_reg;
+
+						if (m_waitrequest = '0') then
+							refill_buf(count_reg*8 + 7 downto count_reg*8) <= m_readdata;
+
+							if (count_reg = 15) then
+								m_read <= '0';
+
+								data(pend_index) <= refill_buf;
+								info(pend_index)(7) <= '1'; -- valid
+								info(pend_index)(6) <= '0'; -- clean on fill
+								info(pend_index)(5 downto 0) <= pend_tag;
+
+								if (pend_is_write = '1') then
+									tmp_line := refill_buf;
+									tmp_line(pend_offset*32 + 31 downto pend_offset*32) := pend_wdata;
+									data(pend_index) <= tmp_line;
+									info(pend_index)(6) <= '1'; -- dirty
+								else
+									s_readdata <= refill_buf(pend_offset*32 + 31 downto pend_offset*32);
+								end if;
+
+								s_waitrequest <= '0';
+								state <= transition;
+								count_reg <= 0;
+							else
+								count_reg <= count_reg + 1;
+							end if;
+						end if;
 					
 					when transition => 
-						-- reset waitrequest, return to main
+						s_waitrequest <= '1';
+						m_read <= '0';
+						m_write <= '0';
+						state <= main;
 						
 					when others => 
-						-- reset = 1 behavior? 
+						state <= main;
 						
 				end case;
 			end if; -- if reset
