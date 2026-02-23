@@ -223,13 +223,6 @@ begin
     -- ===================== SCENARIOS =========================
     -- =========================================================
 
-    -- === Person B place-holder: begin ===
-
-        ------------------------------------------------------------------------
-    -- Person B: Test scenarios / sequences
-    -- Uses Person A procedures exactly as written.
-    ------------------------------------------------------------------------
-
     -- Address choices:
     -- index = addr[8:4]. Adding 0x200 changes tag but keeps index.
     -- We'll use A = 0x0010 (index=1) and B = 0x0210 (same index=1, different tag)
@@ -297,9 +290,7 @@ begin
     cpu_read_word(x"00000030", x);
     check_equality(x, expected_word(16#030#), "S8: after reset, cache cleared; memory still init @0x0030 (no flush)");
 
-    report "All Person-B scenarios passed." severity note;
-    -- === Person B place-holder: end ===
-
+    report "All scenarios passed." severity note;
     
     wait;
 	 
