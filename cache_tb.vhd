@@ -129,7 +129,7 @@ begin
 	s_writedata <= (others => '0');
 		  
 	wait until rising_edge(clk);
-	wait until rising_edge(clk); --jthe extra waits are just in case the wait is not long enough for data to update
+	wait until rising_edge(clk); --the extra waits are just in case the wait is not long enough for data to update
 
 	reset <= '0';
 	wait until rising_edge(clk);
@@ -142,7 +142,6 @@ procedure cpu_write_word(
     wdata : in std_logic_vector(31 downto 0)
 ) is
 begin
-    -- Align to a clock edge, then ISSUE the request first
     wait until rising_edge(clk);
 
     s_addr      <= addr;
@@ -150,10 +149,7 @@ begin
     s_write     <= '1';
     s_read      <= '0';
 
-    -- Wait for cache to complete transaction (waitrequest pulses low)
     wait until s_waitrequest = '0';
-
-    -- Deassert request on next clock edge
     wait until rising_edge(clk);
     s_write <= '0';
 end procedure;
@@ -164,20 +160,15 @@ procedure cpu_read_word(
     variable rdata : out std_logic_vector(31 downto 0)
 ) is
 begin
-    -- Align to a clock edge, then ISSUE the request first
     wait until rising_edge(clk);
 
     s_addr  <= addr;
     s_read  <= '1';
     s_write <= '0';
 
-    -- Wait for completion pulse
     wait until s_waitrequest = '0';
-
-    -- Sample data during completion
     rdata := s_readdata;
 
-    -- Deassert request on next clock edge
     wait until rising_edge(clk);
     s_read <= '0';
 end procedure;
@@ -225,12 +216,6 @@ begin
     -- ===================== SCENARIOS =========================
     -- =========================================================
 
-    -- Address choices:
-    -- index = addr[8:4]. Adding 0x200 changes tag but keeps index.
-    -- We'll use A = 0x0010 (index=1) and B = 0x0210 (same index=1, different tag)
-    -- Also use E = 0x0020 / F = 0x0220 (index=2) for clean-eviction path.
-    -- And C = 0x0030 (index=3) for write-miss-allocate.
-
     -- ========== Scenario 1: read miss -> fill -> hit ==========
     cpu_read_word(x"00000010", x);
     check_equality(x, expected_word(16#010#), "S1a: read miss/fill @0x0010 returns init");
@@ -239,26 +224,20 @@ begin
     check_equality(x, expected_word(16#010#), "S1b: read hit @0x0010 returns init");
 
     -- ========== Scenario 2: write hit -> dirty set -> read hit ==========
-    -- Write word1 within same block: 0x0014
     cpu_write_word(x"00000014", x"A1A2A3A4");
 
     cpu_read_word(x"00000014", x);
     check_equality(x, x"A1A2A3A4", "S2: write hit then read hit @0x0014");
 
     -- ========== Scenario 3: conflict miss (same index, different tag) ==========
-    -- Read conflicting address word1: 0x0214
-    -- If tag compare is wrong, you might incorrectly get A1A2A3A4 here.
     cpu_read_word(x"00000214", x);
     check_equality(x, expected_word(16#214#), "S3: conflict miss @0x0214 returns init (tests tag compare)");
 
     -- ========== Scenario 4: dirty eviction -> verify write-back ==========
-    -- After S3, the dirty line containing 0x0010..0x001F should have been evicted and written back.
-    -- Reading 0x0014 again should retrieve A1A2A3A4 from memory (via refill).
     cpu_read_word(x"00000014", x);
     check_equality(x, x"A1A2A3A4", "S4: write-back persisted after dirty eviction @0x0014");
 
     -- ========== Scenario 5: clean eviction path ==========
-    -- Fill E (clean), conflict with F (should evict clean, no writeback needed), then re-read E
     cpu_read_word(x"00000020", x);
     check_equality(x, expected_word(16#020#), "S5a: read miss/fill @0x0020");
 
@@ -284,9 +263,6 @@ begin
     check_equality(x, x"55667788", "S7b: word1 updated @0x0034");
 
     -- ========== Scenario 8: reset corner case ==========
-    -- Cache should clear its valid/dirty bits on reset; memory should NOT magically revert.
-    -- Since 0x0030 writes were likely still only in cache (dirty but not evicted),
-    -- after reset a read should return the original initialized memory contents.
     reset_procedure;
 
     cpu_read_word(x"00000030", x);
