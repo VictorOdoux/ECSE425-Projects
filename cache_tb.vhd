@@ -138,46 +138,48 @@ end procedure;
 	 
 -- CPU transaction
 procedure cpu_write_word(
-	addr  : in std_logic_vector(31 downto 0);
-	wdata : in std_logic_vector(31 downto 0)
+    addr  : in std_logic_vector(31 downto 0);
+    wdata : in std_logic_vector(31 downto 0)
 ) is
-	begin
-	while s_waitrequest /= '0' loop
-        wait until rising_edge(clk);
-    end loop;
-	 
-	s_addr <= addr;
-	s_writedata <= wdata;
-	s_write <= '1';
-	s_read <= '0';
+begin
+    -- Align to a clock edge, then ISSUE the request first
+    wait until rising_edge(clk);
 
-	wait until rising_edge(clk);
-	s_write <= '0';
-	while s_waitrequest /= '0' loop
-        wait until rising_edge(clk);
-    end loop;
+    s_addr      <= addr;
+    s_writedata <= wdata;
+    s_write     <= '1';
+    s_read      <= '0';
+
+    -- Wait for cache to complete transaction (waitrequest pulses low)
+    wait until s_waitrequest = '0';
+
+    -- Deassert request on next clock edge
+    wait until rising_edge(clk);
+    s_write <= '0';
 end procedure;
 
 -- CPU transaction: read word
 procedure cpu_read_word(
-	addr   : in std_logic_vector(31 downto 0);
-	variable rdata : out std_logic_vector(31 downto 0)
+    addr   : in std_logic_vector(31 downto 0);
+    variable rdata : out std_logic_vector(31 downto 0)
 ) is
-	begin
-	while s_waitrequest /= '0' loop
-        wait until rising_edge(clk);
-    end loop;
-	 
-	s_addr <= addr;
-	s_read <= '1';
-	s_write <= '0';
+begin
+    -- Align to a clock edge, then ISSUE the request first
+    wait until rising_edge(clk);
 
-	wait until rising_edge(clk);
-	s_read <= '0';
-	while s_waitrequest /= '0' loop
-        wait until rising_edge(clk);
-    end loop;
-	rdata := s_readdata;
+    s_addr  <= addr;
+    s_read  <= '1';
+    s_write <= '0';
+
+    -- Wait for completion pulse
+    wait until s_waitrequest = '0';
+
+    -- Sample data during completion
+    rdata := s_readdata;
+
+    -- Deassert request on next clock edge
+    wait until rising_edge(clk);
+    s_read <= '0';
 end procedure;
 
 -- check equality
